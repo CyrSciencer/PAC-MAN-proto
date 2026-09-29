@@ -1,13 +1,11 @@
-from email.header import SPACE
-from tkinter.constants import S
 from typing import Optional, cast
 
 import pygame
 
-M_WIDTH: int = 10
-M_HEIGHT: int = 10
+M_WIDTH: int = 15
+M_HEIGHT: int = 15
 MARGIN: int = 15
-FPS: int = 15
+FPS: int = 12
 SPRITE_DIM: int = 31
 ANIM_STEP_MS: int = 100  # time per animation frame
 BOTTOM_BAR: int = 70  # extra space under the maze (for score, etc.)
@@ -47,22 +45,22 @@ GHOST_FRAMES: list[list[tuple[int, int]]] = [
     [(0, 2), (1, 2), (2, 2), (3, 2), (4, 2), (5, 2), (6, 2), (7, 2)],
     [(0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3)],
     [
-        (0, 4),
-        (1, 4),
-        (2, 4),
-        (3, 4),
-        (4, 4),
-        (5, 4),
-        (6, 4),
-        (7, 4),
-        (0, 5),
-        (1, 5),
-        (2, 5),
-        (3, 5),
-        (4, 5),
-        (5, 5),
-        (6, 5),
-        (7, 5),
+        (0, 4),  # 0 right1
+        (0, 5),  # 1 right3
+        (1, 4),  # 2 right2
+        (1, 5),  # 3 right4
+        (2, 4),  # 4 down1
+        (2, 5),  # 5 down3
+        (3, 4),  # 6 down2
+        (3, 5),  # 7 down4
+        (4, 4),  # 8 left1
+        (4, 5),  # 9 left3
+        (5, 4),  # 10 left2
+        (5, 5),  # 11 left4
+        (6, 4),  # 12 up1
+        (6, 5),  # 13 up3
+        (7, 4),  # 14 up2
+        (7, 5),  # 15 up4
     ],
 ]
 IDLE: tuple[int, ...] = (0, 0, 0, 0)
@@ -79,6 +77,10 @@ GHOST_ANIMATIONS: dict[Optional[str], tuple[int, ...]] = {
     "down": (2, 3),
     "left": (4, 5),
     "right": (0, 1),
+    "d_up": (12, 14, 13, 15),
+    "d_down": (4, 6, 5, 7),
+    "d_left": (8, 10, 9, 11),
+    "d_right": (0, 2, 1, 3),
 }
 
 
@@ -90,6 +92,34 @@ class Maze:
     @staticmethod
     def in_bounds(cell: pygame.Vector2) -> bool:
         return 0 <= cell.x < M_WIDTH and 0 <= cell.y < M_HEIGHT
+
+    @staticmethod
+    def build_maze_surface(cell_size: int) -> pygame.Surface:
+        width = 2 * MARGIN + cell_size * M_WIDTH
+        height = 2 * MARGIN + cell_size * M_HEIGHT
+        surface = pygame.Surface((width, height))
+        surface.fill((20, 20, 35))
+        for row in range(M_HEIGHT):
+            for col in range(M_WIDTH):
+                rect = pygame.Rect(
+                    MARGIN + col * cell_size,
+                    MARGIN + row * cell_size,
+                    cell_size,
+                    cell_size,
+                )
+                pygame.draw.rect(surface, "blue", rect, 1)
+        pygame.draw.rect(
+            surface,
+            "blue",
+            pygame.Rect(
+                MARGIN - 3,
+                MARGIN - 3,
+                cell_size * M_WIDTH + 6,
+                cell_size * M_HEIGHT + 6,
+            ),
+            3,
+        )
+        return surface
 
 
 class Entity:
@@ -132,6 +162,11 @@ class Ghost(Entity):
         indices = GHOST_ANIMATIONS.get(name, IDLE)
         self.active_anim = [self.frames[i] for i in indices]
 
+    def update(self, id: int, maze: Maze, player_state: bool) -> None:
+        name = "right"
+        self.set_animation(name, id, player_state)
+        return
+
 
 class Player(Entity):
     def set_animation(self, name: Optional[str]) -> None:
@@ -140,6 +175,20 @@ class Player(Entity):
         self.anim_name = name
         indices = PLAYER_ANIMATIONS.get(name, IDLE)
         self.active_anim = [self.frames[i] for i in indices]
+
+    def update(self, maze: Maze, held: list[int]) -> None:
+        if 32 in held:
+            held.remove(32)
+        if self.alive is False:
+            self.set_animation("dead")
+            return
+        name = KEY_TO_DIR[held[-1]] if held else None
+        self.set_animation(name)
+        if name is None:
+            return
+        target = self.grid_position + VECTORS[name]
+        if maze.in_bounds(target):
+            self.grid_position = target
 
 
 class Button:
@@ -164,11 +213,6 @@ class Button:
         window.blit(label, label.get_rect(center=self.rect.center))
 
 
-def compute_cell_size(screen_w: int, screen_h: int) -> int:
-    size = max(4, min(screen_h // M_HEIGHT, screen_w // M_WIDTH)) // 2
-    return max(size, 10)
-
-
 def get_img(
     sheet: pygame.Surface, row: int, col: int, size: int, out_size: int
 ) -> pygame.Surface:
@@ -177,24 +221,7 @@ def get_img(
     return pygame.transform.scale(image, (out_size // 1.3, out_size // 1.3))
 
 
-def build_maze_surface(cell_size: int) -> pygame.Surface:
-    width = 2 * MARGIN + cell_size * M_WIDTH
-    height = 2 * MARGIN + cell_size * M_HEIGHT
-    surface = pygame.Surface((width, height))
-    surface.fill("purple")
-    for row in range(M_HEIGHT):
-        for col in range(M_WIDTH):
-            rect = pygame.Rect(
-                MARGIN + col * cell_size,
-                MARGIN + row * cell_size,
-                cell_size,
-                cell_size,
-            )
-            pygame.draw.rect(surface, "black", rect, 1)
-    return surface
-
-
-def handle_events(held: list[int]) -> bool:
+def handle_events(held: list[int], gamemode: str) -> bool:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             return False
@@ -210,28 +237,7 @@ def handle_events(held: list[int]) -> bool:
     return True
 
 
-def update_player(player: Player, maze: Maze, held: list[int]) -> None:
-    if player.alive is False:
-        player.set_animation("dead")
-        return
-    name = KEY_TO_DIR[held[-1]] if held else None
-    player.set_animation(name)
-    if name is None:
-        return
-    target = player.grid_position + VECTORS[name]
-    if maze.in_bounds(target):
-        player.grid_position = target
-
-
-def update_ghost(
-    ghost: Ghost, id: int, maze: Maze, player_state: bool
-) -> None:
-    name = "right"
-    ghost.set_animation(name, id, player_state)
-    return
-
-
-def draw(
+def draw_game(
     window: pygame.Surface,
     background: pygame.Surface,
     player: Player,
@@ -291,10 +297,10 @@ def load_ghosts(
 
     return (
         load_ghost(ghost_1, cell_size, sheet, 0, pygame.Vector2(0, 0)),
-        load_ghost(ghost_2, cell_size, sheet, 1, pygame.Vector2(0, m_w - 1)),
-        load_ghost(ghost_3, cell_size, sheet, 2, pygame.Vector2(m_h - 1, 0)),
+        load_ghost(ghost_2, cell_size, sheet, 1, pygame.Vector2(m_w - 1, 0)),
+        load_ghost(ghost_3, cell_size, sheet, 2, pygame.Vector2(0, m_h - 1)),
         load_ghost(
-            ghost_4, cell_size, sheet, 3, pygame.Vector2(m_h - 1, m_w - 1)
+            ghost_4, cell_size, sheet, 3, pygame.Vector2(m_w - 1, m_h - 1)
         ),
     )
 
@@ -307,17 +313,17 @@ def game_loop(
     window: pygame.Surface,
     background: pygame.Surface,
 ) -> None:
-    update_player(player, maze, held)
+    player.update(maze, held)
     id = 0
     for ghost in ghosts:
-        update_ghost(ghost, id, maze, player.alive)
+        ghost.update(id, maze, player.alive)
         id += 1
         if (
             ghost.vulnerable is False
             and ghost.grid_position == player.grid_position
         ):
             player.alive = False
-    draw(window, background, player, ghosts)
+    draw_game(window, background, player, ghosts)
 
 
 def main_menu(
@@ -346,6 +352,11 @@ def main_menu(
     return next_mode
 
 
+def compute_cell_size(screen_w: int, screen_h: int) -> int:
+    size = max(4, min(screen_h // M_HEIGHT, screen_w // M_WIDTH)) // 2
+    return max(size, 10)
+
+
 def main() -> None:
     pygame.init()
     pygame.display.set_caption("PAC-MAN")
@@ -369,7 +380,7 @@ def main() -> None:
     maze = Maze()
     player = load_player(cell_size, sheet)
     ghosts = load_ghosts(cell_size, sheet, M_WIDTH, M_HEIGHT)
-    background = build_maze_surface(cell_size)
+    background = maze.build_maze_surface(cell_size)
     held: list[int] = []
     gamemode = "main menu"
     player_name = ""
@@ -388,7 +399,7 @@ def main() -> None:
     ]
     running = True
     while running:
-        running = handle_events(held)
+        running = handle_events(held, gamemode)
         match gamemode:
             case "main menu":
                 gamemode = main_menu(
