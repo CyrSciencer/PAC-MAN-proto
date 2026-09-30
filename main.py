@@ -1,3 +1,5 @@
+import copy
+from dataclasses import dataclass, field
 from typing import Optional, cast
 
 import pygame
@@ -9,6 +11,8 @@ FPS: int = 12
 SPRITE_DIM: int = 31
 ANIM_STEP_MS: int = 100  # time per animation frame
 BOTTOM_BAR: int = 70  # extra space under the maze (for score, etc.)
+MAX_NAME_LEN: int = 10
+YELLOW = (255, 227, 0)
 KEY_TO_DIR: dict[int, str] = {
     pygame.K_w: "up",
     pygame.K_UP: "up",
@@ -84,6 +88,9 @@ GHOST_ANIMATIONS: dict[Optional[str], tuple[int, ...]] = {
 }
 
 
+# --------------------------------------------------------------------------
+# Game objects
+# --------------------------------------------------------------------------
 class Maze:
     def __init__(self) -> None:
         # 15 = all four walls set (bitmask); unused until walls are drawn
@@ -139,10 +146,15 @@ class Entity:
         )
 
     def current_frame(self, ticks: int) -> Optional[pygame.Surface]:
-        if self.active_anim != None:
+        if self.active_anim is not None:
             index = (ticks // ANIM_STEP_MS) % len(self.active_anim)
             return self.active_anim[index]
         return None
+
+    def clone(self):
+        other = copy.copy(self)
+        other.grid_position = self.grid_position.copy()
+        return other
 
 
 class Ghost(Entity):
@@ -165,10 +177,14 @@ class Ghost(Entity):
     def update(self, id: int, maze: Maze, player_state: bool) -> None:
         name = "right"
         self.set_animation(name, id, player_state)
-        return
 
 
 class Player(Entity):
+    def __init__(self, cell_size: int) -> None:
+        super().__init__(cell_size)
+        self.name: str = ""
+        self.score: int = 0
+
     def set_animation(self, name: Optional[str]) -> None:
         if name == self.anim_name and self.active_anim:
             return
@@ -176,9 +192,8 @@ class Player(Entity):
         indices = PLAYER_ANIMATIONS.get(name, IDLE)
         self.active_anim = [self.frames[i] for i in indices]
 
-    def update(self, maze: Maze, held: list[int]) -> None:
-        if 32 in held:
-            held.remove(32)
+    def update(self, maze: Maze, held: list[int], state: State) -> None:
+        state.scores[state.name] = self.score
         if self.alive is False:
             self.set_animation("dead")
             return
@@ -206,11 +221,22 @@ class Button:
         self.rect.center = center
         self.hover: bool = hover
 
-    def draw(self, window: pygame.Surface) -> None:
+    def draw(self, window: pygame.Surface, offset: int = 0) -> None:
         bg = (90, 90, 200) if self.hover else (40, 40, 120)
-        pygame.draw.rect(window, bg, self.rect, border_radius=10)
-        label = self.font.render(self.text, True, (255, 227, 0))
-        window.blit(label, label.get_rect(center=self.rect.center))
+        rect = self.rect.move(
+            0, offset
+        )  # a shifted copy; self.rect is unchanged
+        pygame.draw.rect(window, bg, rect, border_radius=10)
+        label = self.font.render(self.text, True, YELLOW)
+        window.blit(label, label.get_rect(center=rect.center))
+
+
+# --------------------------------------------------------------------------
+# Loading helpers
+# --------------------------------------------------------------------------
+def compute_cell_size(screen_w: int, screen_h: int) -> int:
+    size = max(4, min(screen_h // M_HEIGHT, screen_w // M_WIDTH)) // 2
+    return max(size, 10)
 
 
 def get_img(
@@ -218,47 +244,8 @@ def get_img(
 ) -> pygame.Surface:
     image = pygame.Surface((size, size), pygame.SRCALPHA)
     image.blit(sheet, (0, 0), pygame.Rect(col * size, row * size, size, size))
-    return pygame.transform.scale(image, (out_size // 1.3, out_size // 1.3))
-
-
-def handle_events(held: list[int], gamemode: str) -> bool:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            return False
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                return False
-            if event.key in KEY_TO_DIR and event.key not in held:
-                held.append(event.key)
-            if event.key == pygame.K_SPACE:
-                held.append(event.key)
-        elif event.type == pygame.KEYUP and event.key in held:
-            held.remove(event.key)
-    return True
-
-
-def draw_game(
-    window: pygame.Surface,
-    background: pygame.Surface,
-    player: Player,
-    ghosts: tuple[Ghost, ...],
-) -> None:
-    window.fill("black")
-    window.blit(background, (0, 0))
-    # the player's animation is never None, so the frame is always a Surface
-    player_sprite = cast(
-        pygame.Surface, player.current_frame(pygame.time.get_ticks())
-    )
-    window.blit(
-        player_sprite, player_sprite.get_rect(center=player.pixel_position)
-    )
-    for ghost in ghosts:
-        ghost_sprite = ghost.current_frame(pygame.time.get_ticks())
-        if ghost_sprite != None:
-            window.blit(
-                ghost_sprite,
-                ghost_sprite.get_rect(center=ghost.pixel_position),
-            )
+    scaled = int(out_size / 1.3)
+    return pygame.transform.scale(image, (scaled, scaled))
 
 
 def load_player(cell_size: int, sheet: pygame.Surface) -> Player:
@@ -290,73 +277,261 @@ def load_ghost(
 def load_ghosts(
     cell_size: int, sheet: pygame.Surface, m_w: int, m_h: int
 ) -> tuple[Ghost, Ghost, Ghost, Ghost]:
-    ghost_1 = Ghost(cell_size)
-    ghost_2 = Ghost(cell_size)
-    ghost_3 = Ghost(cell_size)
-    ghost_4 = Ghost(cell_size)
-
     return (
-        load_ghost(ghost_1, cell_size, sheet, 0, pygame.Vector2(0, 0)),
-        load_ghost(ghost_2, cell_size, sheet, 1, pygame.Vector2(m_w - 1, 0)),
-        load_ghost(ghost_3, cell_size, sheet, 2, pygame.Vector2(0, m_h - 1)),
         load_ghost(
-            ghost_4, cell_size, sheet, 3, pygame.Vector2(m_w - 1, m_h - 1)
+            Ghost(cell_size), cell_size, sheet, 0, pygame.Vector2(0, 0)
+        ),
+        load_ghost(
+            Ghost(cell_size), cell_size, sheet, 1, pygame.Vector2(m_w - 1, 0)
+        ),
+        load_ghost(
+            Ghost(cell_size), cell_size, sheet, 2, pygame.Vector2(0, m_h - 1)
+        ),
+        load_ghost(
+            Ghost(cell_size),
+            cell_size,
+            sheet,
+            3,
+            pygame.Vector2(m_w - 1, m_h - 1),
         ),
     )
 
 
-def game_loop(
-    player: Player,
-    maze: Maze,
-    held: list[int],
-    ghosts: tuple[Ghost, ...],
-    window: pygame.Surface,
-    background: pygame.Surface,
-) -> None:
-    player.update(maze, held)
-    id = 0
-    for ghost in ghosts:
-        ghost.update(id, maze, player.alive)
-        id += 1
-        if (
-            ghost.vulnerable is False
-            and ghost.grid_position == player.grid_position
+# --------------------------------------------------------------------------
+# Input and shared state
+# --------------------------------------------------------------------------
+@dataclass
+class Inputs:
+    held: list[int] = field(default_factory=list)  # direction keys (game)
+    pressed: list[int] = field(default_factory=list)  # new key presses
+    typed: list[str] = field(default_factory=list)  # TEXTINPUT this frame
+    dt: int = 0
+
+
+@dataclass
+class State:
+    mode: str = "main menu"
+    name: str = ""
+    scores: dict[str, int] = field(default_factory=dict)
+
+
+def handle_events(inp: Inputs) -> bool:
+    """The only place that calls pygame.event.get()."""
+    inp.pressed.clear()
+    inp.typed.clear()
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            return False
+        if event.type == pygame.TEXTINPUT:
+            inp.typed.append(event.text)
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                return False
+            inp.pressed.append(event.key)
+            if event.key in KEY_TO_DIR and event.key not in inp.held:
+                inp.held.append(event.key)
+        elif event.type == pygame.KEYUP and event.key in inp.held:
+            inp.held.remove(event.key)
+    return True
+
+
+# --------------------------------------------------------------------------
+# Screens
+# --------------------------------------------------------------------------
+class Screen:
+    def on_enter(self, state: State) -> None:
+        """Called once when this screen becomes active."""
+
+    def update(
+        self,
+        inp: Inputs,
+        state: State,
+        player: Player | None = None,
+        ghosts: tuple[Ghost, ...] | None = None,
+    ) -> Optional[str]:
+        """Return a new mode name to switch screens, or None to stay."""
+        return None
+
+    def draw(self, window: pygame.Surface, state: State) -> None:
+        """Draw this screen."""
+
+
+class MenuScreen(Screen):
+    def __init__(
+        self,
+        title: str,
+        items: list[tuple[str, str]],  # (label, target mode)
+        title_font: pygame.font.Font,
+        button_font: pygame.font.Font,
+        win_w: int,
+        show_name: bool = False,
+    ) -> None:
+        self.title = title
+        self.title_font = title_font
+        self.button_font = button_font
+        self.win_w = win_w
+        self.show_name = show_name
+        self.targets = [target for _, target in items]
+        self.selected = 0
+        self.buttons = [
+            Button(
+                label,
+                (win_w // 2, 350 + i * 100),
+                (700, 70),
+                button_font,
+                i == 0,
+            )
+            for i, (label, _) in enumerate(items)
+        ]
+
+    def on_enter(self, state: State) -> None:
+        self.selected = 0
+
+    def update(self, inp: Inputs, state: State) -> Optional[str]:
+        for key in inp.pressed:
+            if key == pygame.K_UP:
+                self.selected = (self.selected - 1) % len(self.buttons)
+            elif key == pygame.K_DOWN:
+                self.selected = (self.selected + 1) % len(self.buttons)
+            elif key in (pygame.K_SPACE, pygame.K_RETURN):
+                return self.targets[self.selected]
+        for i, button in enumerate(self.buttons):
+            button.hover = i == self.selected
+        return None
+
+    def draw(self, window: pygame.Surface, state: State) -> None:
+        window.fill((0, 0, 0))
+        title = self.title_font.render(self.title, True, YELLOW)
+        window.blit(title, title.get_rect(center=(self.win_w // 2, 150)))
+        if self.show_name:
+            name = self.button_font.render(f"[{state.name}]", True, YELLOW)
+            window.blit(name, name.get_rect(center=(self.win_w // 2, 250)))
+        for button in self.buttons:
+            button.draw(window)
+
+
+class ScoreBoard(MenuScreen):
+    def draw(self, window: pygame.Surface, state: State) -> None:
+        window.fill((0, 0, 0))
+        title = self.title_font.render(self.title, True, YELLOW)
+        window.blit(title, title.get_rect(center=(self.win_w // 2, 150)))
+        offset = -70
+        for name, score in sorted(
+            state.scores.items(), key=lambda item: item[1]
         ):
-            player.alive = False
-    draw_game(window, background, player, ghosts)
+            offset += 70
+            name = self.button_font.render(f"\"{name}\":{score}", True, YELLOW)
+            window.blit(
+                name, name.get_rect(center=(self.win_w // 2, 250 + offset))
+            )
+        for button in self.buttons:
+            button.draw(window, offset)
 
 
-def main_menu(
-    window: pygame.Surface,
-    held: list[int],
-    win_w: int,
-    font: pygame.font.Font,
-    buttons: list[Button],
-) -> str:
-    window.fill((0, 0, 0))
-    title = font.render("PAC MAN", True, (255, 227, 0))
-    window.blit(title, title.get_rect(center=(win_w // 2, 150)))
+class TypingScreen(Screen):
+    def __init__(self, font: pygame.font.Font, win_w: int) -> None:
+        self.font = font
+        self.win_w = win_w
 
-    next_mode = "main menu"
-    if held:
-        key = held[-1]
-        if key == pygame.K_UP:
-            buttons[0].hover, buttons[1].hover = True, False
-        elif key == pygame.K_DOWN:
-            buttons[0].hover, buttons[1].hover = False, True
-        elif key == pygame.K_SPACE:
-            next_mode = "game" if buttons[0].hover else "set name"
+    def on_enter(self, state: State) -> None:
+        pygame.key.start_text_input()
 
-    for button in buttons:
-        button.draw(window)
-    return next_mode
+    def update(self, inp: Inputs, state: State) -> Optional[str]:
+        for ch in inp.typed:
+            if len(state.name) < MAX_NAME_LEN and ch.isprintable():
+                state.name += ch
+        for key in inp.pressed:
+            if key == pygame.K_BACKSPACE:
+                state.name = state.name[:-1]
+            elif key == pygame.K_RETURN:
+                pygame.key.stop_text_input()
+                return "set name"
+        return None
+
+    def draw(self, window: pygame.Surface, state: State) -> None:
+        window.fill((0, 0, 0))
+        text = self.font.render(f"{state.name}_", True, (255, 255, 255))
+        validate = self.font.render(
+            "press enter to validate", True, (255, 255, 255)
+        )
+        window.blit(text, text.get_rect(center=(self.win_w // 2, 300)))
+        window.blit(validate, validate.get_rect(center=(self.win_w // 2, 400)))
 
 
-def compute_cell_size(screen_w: int, screen_h: int) -> int:
-    size = max(4, min(screen_h // M_HEIGHT, screen_w // M_WIDTH)) // 2
-    return max(size, 10)
+class GameScreen(Screen):
+    def __init__(
+        self,
+        player_template: Player,
+        maze: Maze,
+        ghosts_template: tuple[Ghost, ...],
+        background: pygame.Surface,
+    ) -> None:
+        self.player_template = player_template
+        self.ghosts_template = ghosts_template
+        self.player = player_template.clone()
+        self.ghosts = tuple(g.clone() for g in ghosts_template)
+        self.maze = maze
+        self.background = background
+        self.last_step = 0
+        self.elapsed_ms = 0
+        self.time_death = 0
+
+    def on_enter(self, state: State) -> None:
+        self.player = self.player_template.clone()
+        self.ghosts = tuple(g.clone() for g in self.ghosts_template)
+        self.player.name = state.name
+        self.last_step = pygame.time.get_ticks()
+        self.elapsed_ms = 0
+
+    def update(self, inp: Inputs, state: State) -> Optional[str]:
+        self.player.update(self.maze, inp.held, state)
+        self.elapsed_ms += min(inp.dt, 100)
+        if self.player.alive is True:
+            self.time_death = self.elapsed_ms
+        for id, ghost in enumerate(self.ghosts):
+            ghost.update(id, self.maze, self.player.alive)
+            if (
+                ghost.vulnerable is False
+                and ghost.grid_position == self.player.grid_position
+            ):
+                self.player.alive = False
+        if self.elapsed_ms - self.time_death > 1000:
+            return "Score Board"
+        return None
+
+    def draw(self, window: pygame.Surface, state: State) -> None:
+        window.fill("black")
+        window.blit(self.background, (0, 0))
+        now = pygame.time.get_ticks()
+        sprite = cast(pygame.Surface, self.player.current_frame(now))
+        window.blit(sprite, sprite.get_rect(center=self.player.pixel_position))
+        for ghost in self.ghosts:
+            ghost_sprite = ghost.current_frame(now)
+            if ghost_sprite is not None:
+                window.blit(
+                    ghost_sprite,
+                    ghost_sprite.get_rect(center=ghost.pixel_position),
+                )
+        score = pygame.font.SysFont(None, 70).render(
+            f"{self.player.name} score: {self.player.score}",
+            True,
+            (255, 255, 255),
+        )
+        if ghost_sprite != None:
+            window.blit(
+                score,
+                ghost_sprite.get_rect(
+                    center=(
+                        window.get_width() // 32,
+                        window.get_height() - BOTTOM_BAR // 1.7,
+                    )
+                ),
+            )
 
 
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
 def main() -> None:
     pygame.init()
     pygame.display.set_caption("PAC-MAN")
@@ -375,40 +550,60 @@ def main() -> None:
             2 * MARGIN + cell_size * M_HEIGHT + BOTTOM_BAR,
         )
     )
+    # text input is tied to the window, so stop it after set_mode
+    pygame.key.stop_text_input()
     clock = pygame.time.Clock()
     sheet = pygame.image.load("pac_sheet.png").convert_alpha()
     maze = Maze()
-    player = load_player(cell_size, sheet)
-    ghosts = load_ghosts(cell_size, sheet, M_WIDTH, M_HEIGHT)
+    player_template = load_player(cell_size, sheet)
+    ghosts_template = load_ghosts(cell_size, sheet, M_WIDTH, M_HEIGHT)
     background = maze.build_maze_surface(cell_size)
-    held: list[int] = []
-    gamemode = "main menu"
-    player_name = ""
+
     title_font = pygame.font.SysFont(None, 100)
-    buttons = [
-        Button(
-            "Play", (window.get_width() // 2, 300), (250, 70), title_font, True
-        ),
-        Button(
-            "Set Name",
-            (window.get_width() // 2, 400),
-            (400, 70),
+    button_font = pygame.font.SysFont(None, 48)
+    win_w = window.get_width()
+
+    state = State()
+    inp = Inputs()
+    screens: dict[str, Screen] = {
+        "main menu": MenuScreen(
+            "PAC MAN",
+            [("Play", "game"), ("Set Name", "set name")],
             title_font,
-            False,
+            button_font,
+            win_w,
         ),
-    ]
+        "set name": MenuScreen(
+            "SCORE NAME",
+            [("Set Name", "typing"), ("Back to main menu", "main menu")],
+            title_font,
+            button_font,
+            win_w,
+            show_name=True,
+        ),
+        "Score Board": ScoreBoard(
+            "SCORE BOARD",
+            [("Retry", "game"), ("Back to main menu", "main menu")],
+            title_font,
+            button_font,
+            win_w,
+            show_name=True,
+        ),
+        "typing": TypingScreen(button_font, win_w),
+        "game": GameScreen(player_template, maze, ghosts_template, background),
+    }
     running = True
     while running:
-        running = handle_events(held, gamemode)
-        match gamemode:
-            case "main menu":
-                gamemode = main_menu(
-                    window, held, window.get_width(), title_font, buttons
-                )
-            case "game":
-                game_loop(player, maze, held, ghosts, window, background)
+        running = handle_events(inp)
+        screen = screens[state.mode]
+        next_mode = screen.update(inp, state)
+        screen.draw(window, state)
+        if next_mode and next_mode != state.mode:
+            state.mode = next_mode
+            inp.held.clear()
+            screens[next_mode].on_enter(state)
         pygame.display.flip()
-        clock.tick(FPS)
+        inp.dt = clock.tick(FPS)
 
     pygame.quit()
 
