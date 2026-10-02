@@ -1,10 +1,6 @@
-import copy
-from dataclasses import dataclass, field
 from typing import Optional, cast
-import sys
 import pygame
-import json
-from parser import json_parse
+from utils import Inputs, State, SaveSystem, Player, Ghost, Maze
 
 MARGIN: int = 15
 FPS: int = 12
@@ -86,173 +82,6 @@ GHOST_ANIMATIONS: dict[Optional[str], tuple[int, ...]] = {
     "d_left": (8, 10, 9, 11),
     "d_right": (0, 2, 1, 3),
 }
-
-# def json_handler(file:str):
-
-
-@dataclass
-class Inputs:
-    held: list[int] = field(default_factory=list)  # direction keys (game)
-    pressed: list[int] = field(default_factory=list)  # new key presses
-    typed: list[str] = field(default_factory=list)  # TEXTINPUT this frame
-    dt: int = 0
-
-
-@dataclass
-class State:
-    mode: str = "main menu"
-    name: str = ""
-    scores: dict[str, int] = field(default_factory=dict)
-    m_width: int = 15
-    m_height: int = 15
-
-
-class SaveSystem:
-    def __init__(self) -> None:
-        self.scores = {}
-        self.datas = {}
-        self.file = ""
-
-    def loading(self, state: State) -> bool:
-        args = sys.argv[1:]
-        if len(args) == 0:
-            print("Usage: main.py <file.json>")
-            return False
-        try:
-            self.file = args[0]
-            with open(args[0], "r") as file:
-                self.data = json_parse(file)
-                self.scores = self.data["scores"]
-                state.m_height, state.m_width = self.data["width-height"]
-            return True
-        except Exception as e:
-            print(f"Error opening file '{args[0]}': {e}")
-            return False
-
-    def export(self, scores: dict[str, int]):
-        self.data["scores"] = scores
-        with open(self.file, "w") as file:
-            file.write(json.dumps(self.data))
-
-
-# --------------------------------------------------------------------------
-# Game objects
-# --------------------------------------------------------------------------
-class Maze:
-    def __init__(self, state: State) -> None:
-        # 15 = all four walls set (bitmask); unused until walls are drawn
-        self.grid: list[list[int]] = [
-            [15] * state.m_width for _ in range(state.m_height)
-        ]
-
-    @staticmethod
-    def in_bounds(cell: pygame.Vector2, state: State) -> bool:
-        return 0 <= cell.x < state.m_width and 0 <= cell.y < state.m_height
-
-    @staticmethod
-    def build_maze_surface(cell_size: int, state: State) -> pygame.Surface:
-        width = 2 * MARGIN + cell_size * state.m_width
-        height = 2 * MARGIN + cell_size * state.m_height
-        surface = pygame.Surface((width, height))
-        surface.fill((20, 20, 35))
-        for row in range(state.m_height):
-            for col in range(state.m_width):
-                rect = pygame.Rect(
-                    MARGIN + col * cell_size,
-                    MARGIN + row * cell_size,
-                    cell_size,
-                    cell_size,
-                )
-                pygame.draw.rect(surface, "blue", rect, 1)
-        pygame.draw.rect(
-            surface,
-            "blue",
-            pygame.Rect(
-                MARGIN - 3,
-                MARGIN - 3,
-                cell_size * state.m_width + 6,
-                cell_size * state.m_height + 6,
-            ),
-            3,
-        )
-        return surface
-
-
-class Entity:
-    def __init__(self, cell_size: int) -> None:
-        self.grid_position: pygame.Vector2 = pygame.Vector2(2, 2)
-        self.cell_size: int = cell_size
-        self.frames: list[pygame.Surface] = []
-        self.active_anim: Optional[list[pygame.Surface]] = []
-        self.alive: bool = True
-        self.anim_name: Optional[str] = None
-
-    @property
-    def pixel_position(self) -> pygame.Vector2:
-        return pygame.Vector2(
-            MARGIN + (self.grid_position.x + 0.5) * self.cell_size,
-            MARGIN + (self.grid_position.y + 0.5) * self.cell_size,
-        )
-
-    def current_frame(self, ticks: int) -> Optional[pygame.Surface]:
-        if self.active_anim is not None:
-            index = (ticks // ANIM_STEP_MS) % len(self.active_anim)
-            return self.active_anim[index]
-        return None
-
-    def clone(self):
-        other = copy.copy(self)
-        other.grid_position = self.grid_position.copy()
-        return other
-
-
-class Ghost(Entity):
-    def __init__(self, cell_size: int) -> None:
-        super().__init__(cell_size)
-        self.vulnerable: bool = False
-
-    def set_animation(
-        self, name: Optional[str], id: int, player_state: bool
-    ) -> None:
-        if player_state is False:
-            self.active_anim = None
-            return
-        if name == self.anim_name and self.active_anim:
-            return
-        self.anim_name = name
-        indices = GHOST_ANIMATIONS.get(name, IDLE)
-        self.active_anim = [self.frames[i] for i in indices]
-
-    def update(self, id: int, maze: Maze, player_state: bool) -> None:
-        name = "right"
-        self.set_animation(name, id, player_state)
-
-
-class Player(Entity):
-    def __init__(self, cell_size: int) -> None:
-        super().__init__(cell_size)
-        self.name: str = ""
-        self.score: int = 0
-
-    def set_animation(self, name: Optional[str]) -> None:
-        if name == self.anim_name and self.active_anim:
-            return
-        self.anim_name = name
-        indices = PLAYER_ANIMATIONS.get(name, IDLE)
-        self.active_anim = [self.frames[i] for i in indices]
-
-    def update(self, maze: Maze, held: list[int], state: State) -> None:
-        state.scores[state.name] = self.score
-        if self.alive is False:
-            self.set_animation("dead")
-            return
-        name = KEY_TO_DIR[held[-1]] if held else None
-        self.set_animation(name)
-        if name is None:
-            return
-        target = self.grid_position + VECTORS[name]
-        if maze.in_bounds(target, state):
-            self.grid_position = target
 
 
 class Button:
@@ -458,7 +287,7 @@ class MenuScreen(Screen):
 
 
 class TypingScreen(Screen):
-    def __init__(self, font: pygame.font.Font, win_w: int) -> None:
+    def __init__(self, font: pygame.font.Font, win_w: int, score: int) -> None:
         self.font = font
         self.win_w = win_w
 
@@ -476,7 +305,10 @@ class TypingScreen(Screen):
                 state.name = state.name[:-1]
             elif key == pygame.K_RETURN:
                 pygame.key.stop_text_input()
-                return "game"
+                state.scores[state.name] = 0
+                if state.current_score > state.scores[state.name]:
+                    state.scores[state.name] = state.current_score
+                return "main menu"
         if pygame.key.get_pressed()[pygame.K_BACKSPACE]:
             state.name = state.name[:-1]
         return None
@@ -512,7 +344,6 @@ class GameScreen(Screen):
     def on_enter(self, state: State) -> None:
         self.player = self.player_template.clone()
         self.ghosts = tuple(g.clone() for g in self.ghosts_template)
-        self.player.name = state.name
         self.last_step = pygame.time.get_ticks()
         self.elapsed_ms = 0
 
@@ -529,7 +360,7 @@ class GameScreen(Screen):
             ):
                 self.player.alive = False
         if self.elapsed_ms - self.time_death > 1000:
-            return "main menu"
+            return "typing"
         return None
 
     def draw(self, window: pygame.Surface, state: State) -> None:
@@ -539,7 +370,7 @@ class GameScreen(Screen):
         sprite = cast(pygame.Surface, self.player.current_frame(now))
         window.blit(sprite, sprite.get_rect(center=self.player.pixel_position))
         score = pygame.font.SysFont(None, 70).render(
-            f"{self.player.name} score: {self.player.score}",
+            f"score: {state.current_score}",
             True,
             (255, 255, 255),
         )
@@ -561,7 +392,6 @@ class GameScreen(Screen):
                 )
 
 
-# ``` score menu should be in main menu and name setter should be between main menu and game loop ===============================================================================```
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
@@ -606,16 +436,17 @@ def main() -> None:
     screens: dict[str, Screen] = {
         "main menu": MenuScreen(
             "PAC MAN",
-            [("Push SPACE to play", "typing")],
+            [("Push SPACE to play", "game")],
             title_font,
             button_font,
             win_w,
         ),
-        "typing": TypingScreen(button_font, win_w),
+        "typing": TypingScreen(button_font, win_w, state.current_score),
         "game": GameScreen(player_template, maze, ghosts_template, background),
     }
     running = True
     while running:
+        print(f"\r{ state.current_score}", end="", flush=True)
         running = handle_events(inp, state.scores, savefile)
         screen = screens[state.mode]
         next_mode = screen.update(inp, state)
